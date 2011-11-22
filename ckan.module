@@ -1,0 +1,1279 @@
+<?php
+/**
+ * @file
+ * A Module to Integrate CKAN and Drupal.
+ * 
+ * This works by 
+ * 
+ *   1. providing a serach and listing interface to CKAN with links to this Drupal site
+ *   2. using a wildcard menu handler to match these links in the first instance
+ *   3. this loads the packages and creates matching nodes (storing the ckan name)
+ *   4. the node has a url alias which overrides the wildcard match
+ *   
+ *   Now we have Drupal nodes which can have user commments associated with them, fivestar votes etc...
+ * 
+ * @author Colin Calnan colin@raisedeyebrow.com
+ * @copyright Rasied Eyebrow Web Studio Inc.
+ * 
+ */
+ 
+ 
+/**
+ * Implementation of hook_init
+ */
+function ckan_init() {
+  drupal_add_css(drupal_get_path('module', 'ckan') .'/ckan.css');
+}
+
+/**
+ * Implementation of hook_menu
+ */
+function ckan_menu(){
+    $items = array();
+
+		// CKAN module settings page
+    $items['admin/settings/ckan'] = array(
+    'title' => 'CKAN settings',
+    'description' => 'Modify setting for CKAN module',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('ckan_admin'),
+    'access arguments' => array('access administration pages'),
+    'type' => MENU_NORMAL_ITEM,
+   );
+
+    // link to the search form page
+    $items['ckan_search'] = array(
+    'title'           => t('Search CKAN'),
+    'page callback'   => 'drupal_get_form',
+    'page arguments'  => array('ckan_search_form'),
+    'access callback' => TRUE,
+    );
+
+		// Search results page
+    $items['data/search/%'] = array(
+    'page callback'     => 'ckan_search_form_results_page',
+    'page arguments'    => array(2),
+    'access arguments'  => array('access content'),
+    'type'              => MENU_CALLBACK,
+    );
+    
+    // Individual dataset page
+    $items['dataset/%'] = array(
+    'page callback'   	=> 'ckan_new',
+    'page arguments'  	=> array(1),
+    'access arguments' 	=> array('access content'),
+    'type'            	=> MENU_CALLBACK,
+    );
+    
+    // Menu hook call to update a node - Called from CKAN itself
+    $items['update/%'] = array(
+    'page callback'   	=> 'ckan_update_data',
+    'page arguments'  	=> array(1),
+    'access arguments' 	=> array('access content'),
+    'type'            	=> MENU_LOCAL_TASK,
+    );
+    
+    // Ministry List page
+    $items['data/ministry'] = array(
+    	'title' 						=> 'Browse by Ministry',
+    	'description'				=> 'List all ministries and their count',
+	    'page callback'   	=> 'ckan_ministry_list',
+	    'access arguments' 	=> array('access content'),
+	    'type'            	=> MENU_NORMAL_ITEM
+    );
+    
+    // List of packages/datasets per Ministry
+    $items['data/ministry/%'] = array(
+	    'page callback'   	=> 'ckan_ministry_data',
+	    'page arguments'  	=> array(2),
+	    'access arguments' 	=> array('access content'),
+	    'type'            	=> MENU_CALLBACK,
+    );
+    
+    // Individual Ministry dataset list feed
+    $items['data/ministry/%/feed'] = array(
+	    'page callback'   	=> 'ckan_ministry_feed',
+	    'page arguments'  	=> array(2),
+	    'access arguments' 	=> array('access content'),
+	    'type'            	=> MENU_CALLBACK,
+    );
+    
+    // List of all tags
+    $items['data/tag'] = array(
+	    'page callback'   	=> 'ckan_tag',
+	    'page arguments'  	=> array(2),
+	    'access arguments' 	=> array('access content'),
+	    'type'            	=> MENU_CALLBACK,
+    );
+    
+    // List of packages/datasets per Tag
+    $items['data/tag/%/feed'] = array(
+	    'page callback'   	=> 'ckan_tag_feed',
+	    'page arguments'  	=> array(2),
+	    'access arguments' 	=> array('access content'),
+	    'type'            	=> MENU_CALLBACK,
+    );
+    
+    // list of every package/dataset
+    $items['data/all'] = array(
+	    'page callback'   	=> 'ckan_all',
+	    'access arguments' 	=> array('access content'),
+	    'type'            	=> MENU_CALLBACK,
+    );
+    
+    // Feed for every package/dataset list
+    $items['data/all/feed'] = array(
+	    'page callback'   	=> 'ckan_all_feed',
+	    'access arguments' 	=> array('access content'),
+	    'type'            	=> MENU_CALLBACK,
+    );
+    
+    // Edit the node in CKAN
+	  $items['node/%node/ckan'] = array(
+	    'title' => 'Edit in CKAN',
+	    'page callback' => 'ckan_edit_ckan',
+	    'page arguments' => array(1, 'node'),
+	    'access callback' => 'user_access',
+	    'access arguments' => array('administer nodes'),
+	    'type' => MENU_LOCAL_TASK,
+	    'weight' => 1,
+  	);
+        
+    return $items;
+}
+
+/**
+ * FormAPI callback funciton to build admin settings screen
+ */
+function ckan_admin() {
+  $form = array();
+
+  $form['ckan_ministry_list'] = array(
+    '#type' => 'textarea',
+    '#title' => t('Ministry List'),
+    '#default_value' => variable_get('ckan_ministry_list', ''),
+    '#description' => t('Please put each Ministry on a new line.'),
+    '#required' => TRUE,
+  );
+  
+  $form['ckan_items_per_page'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Items per page'),
+    '#default_value' => variable_get('ckan_items_per_page', 4), // default to 1 hour (60*60)
+    '#size' => 5,
+    '#maxlength' => 10,
+    '#description' => t('When listing out packages, how many items per page.'),
+    '#required' => TRUE,
+  );
+  
+   $form['ckan_tagcloud_total'] = array(
+  	'#type' => 'textfield',
+    '#title' => t('Number of tags to show in Tag Cloud'),
+    '#default_value' => variable_get('ckan_tagcloud_total', 40),
+    '#size' => 5,
+    '#maxlength' => 10,
+    '#description' => t('Determines the top x number of tags in the Popular Tag block.'),
+    '#required' => TRUE,
+   );
+  
+  $options = array(
+  	'weight,asc' => t('by weight, ascending'), 
+  	'weight,desc' => t('by weight, descending'), 
+  	'title,asc' => t('by title, ascending'), 
+  	'title,desc' => t('by title, descending'), 
+  	'random,none' => t('random')
+  );
+  
+  $form['ckan_tagcloud_sort_order'] = array(
+  	'#type' => 'radios',
+    '#title' => t('Tag Cloud sort order'),
+    '#options' => $options,
+    '#default_value' => variable_get('ckan_tagcloud_sort_order', 'title,asc'),
+    '#description' => t('Determines the sort order of the x number of tags on the Popular Tag block.')
+   );
+   
+   $form['ckan_no_results_page'] = array(
+  	'#type' => 'textfield',
+    '#title' => t('Page to redirect to if no results found'),
+    '#default_value' => variable_get('ckan_no_results_page', 'sorry'),
+    '#description' => t('This can be a internal Drupal path like <em>node/123</em> or a Drupal path like <em>sorry-page</em>. This path must exist.'),
+    '#required' => TRUE,
+   );
+
+  return system_settings_form($form);
+}
+
+/**
+ * Implementation of hook_block
+ */
+function ckan_block($op = 'list', $delta = 0, $edit = array()) {
+	switch($op) {
+		case 'list':
+			$blocks[0] = array('info' => t('CKAN Search datasets'),
+      	'weight' => 0, 
+      	'status' => 1, 
+      	'region' => 'left'
+    	);
+    
+    	$blocks[1] = array('info' => t('CKAN Browse by Ministry'));   	
+    	
+    	$blocks[2] = array(
+    		'info'	=> t('CKAN Tag Cloud'),
+    		'cache' => BLOCK_CACHE_PER_PAGE
+    	);
+    	
+    	$blocks[3] = array(
+    		'info' 	=> t('CKAN Chart'),
+    		'cache' => BLOCK_CACHE_PER_PAGE
+    	);
+    	
+    	$blocks[4] = array (
+    		'info' 	=> t('Open ID login'),
+    		'cache' => BLOCK_CACHE_PER_PAGE
+    	);
+    	
+    	return $blocks;
+ 		break;
+ 		
+ 		case 'view':
+ 			switch($delta) {
+ 				case 0:
+ 					$block['content'] = drupal_get_form('ckan_search_form');
+ 					break;
+ 					
+ 			 case 1:
+ 			 	$block['subject'] = t('Browse by ministry');
+	  		$block['content'] = ckan_ministry(NULL);
+ 			 	break;
+ 			 	
+ 			 case 2:
+ 				 	$block['subject'] = t('Tags');
+ 				 	$tags = ckan_tag_cloud();
+ 					$block['content'] = $tags;
+ 					break;
+ 					
+ 			case 3:
+ 				$block['subject'] = t('Chart');
+ 				$block['content'] = ckan_chart();
+      	break;
+      
+      case 4:
+      	$block['content'] = ckan_openid_block(); 
+      	break;
+  	}   
+  	return $block;
+	}
+}
+
+/**
+ * Implementation of hook_cron()
+ *
+ **/
+function ckan_cron() {
+	// Get the md5sum of the current atom feed
+	$current_feed = trim(md5_file('http://ca.ckan.net/revision/list?format=atom&days=1'));
+	watchdog('ckan', 'Current feed md5: '. $current_feed);
+	// Retrieve the previously stored md5sum
+	$previous_feed = variable_get('ckan_atom_feed_md5', $current_feed);
+	watchdog('ckan', 'Previous feed md5: '.$previous_feed);
+	
+	// If there have been changes
+	if($current_feed != $previous_feed) {
+		watchdog('ckan', 'ATOM feed has updated, clearing caches and deleting nodes');
+		// Flush all the caches
+		cache_clear_all('*', 'cache_ckan', TRUE);
+  	// Set the previous feed md5
+		variable_set('ckan_atom_feed_md5', $current_feed);
+	}
+}
+
+
+/**
+ * Function to build a Google Chart
+ *
+ * @return	string	HTML code with img tag
+ *
+ **/
+function ckan_chart() {
+  if(($cache = cache_get('ckan:chart', 'cache_ckan')) && !empty($cache->data)) {
+		$image = $cache->data;
+	} else {
+		watchdog('ckan', 'Called Google API to build chart');
+		// Get the list of ministries
+		$ministries = explode("\r\n", filter_xss(variable_get('ckan_ministry_list', '')));
+    // Set up our data array
+		$data = array();
+		foreach($ministries as $ministry) {
+			$ckan = ckan_ckan();
+			// Get the list of tags with their count
+			try {
+				$results = $ckan->advancedSearch(array('department' => $ministry, 'all_fields' => '0', 'offset' => '0', 'limit' => '1'));
+			  $count = $results->count;
+			} catch (Exception $e){
+			  $count = 0;
+			}
+			// Cache the count to use on the Ministry list page '/ministry'
+		  cache_set('ckan:ministry_'. $ministry .'_count', $count, 'cache_ckan');
+			$chart->data[$ministry. ' ('. $count . ')'] = $count;
+	  }
+	  // Sort the array in reverse order - most packages first and maintain index association
+	  arsort($chart->data);
+	  // Return all the keys of the data array - the names of the ministries
+	  $chart->legend = array_keys($chart->data);
+	  // Get the range of the chart - highest + a quarter
+	  $range = round(current($chart->data) * 1.25, -1);
+	  // Grid spacing  100/MaxRange*IntervalAmount
+	  $grid = 100/$range * 50;
+	  // Chart size, must be less than 30k pixels
+	  $chart->size = array(
+	  	'590',
+	  	'380'
+	  );
+		
+		// Create query
+		$chart->query =
+			'cht=bhg&'.	// Type
+			'chd=t:'.implode(',', $chart->data).'&'.	// Data
+			'chs='.$chart->size[0].'x'. $chart->size[1].'&'.	// Size
+			'chco=cc0000&'.	// Color ( Remove # from string )
+			'chxt=x,y&'.	// X,Y axis labels
+			'chxr=0,0,'.$range.'&'. // Range
+			'chxs=1,000000,13|0,000000,13&'. 	// Axis colors and font size
+			'chg='.$grid.',0,5,5&'. // Grid <verticalGridLines>,<horizontalGridLines>,<lineSize>,<gapSize>
+			'chds=0,'.$range.'&'.	// Scale
+			'chma=0,0,0,0&'. //<left_margin>,<right_margin>,<top_margin>,<bottom_margin>|<legend_width>,<legend_height>
+			'chbh=13,0,2&'.	// bar_width_or_scale, space_between_bars, space_between_groups
+			'chxl=1:|'.implode('|', array_reverse($chart->legend, TRUE)).'&'; //|Jan|Feb|Mar|Apr|May',
+		
+		// Build a querystring from the query array
+		$api_path = 'http://chart.apis.google.com/chart?';
+		$url = $chart->query;
+		$image = sprintf('<img src="%s" alt="%s" style="width:%spx;height:%spx;" />', $api_path.$url, 'Who\'s Sharing', $chart->size[0], $chart->size[1]);
+		cache_set('ckan:chart', $image, 'cache_ckan');
+	}
+	return $image;
+}
+
+/**
+ * Gets the ckan Object
+ * Initialises it in one central place reusing it if needed.
+ *  
+ * @return Ckan $ckan
+ */
+function ckan_ckan(){
+	static $ckan=null;
+	if (!$ckan){
+		require_once(dirname(__FILE__) . '/ckan.php');
+		$ckan=new Ckan(variable_get('ckan_site', 'http://ca.ckan.net/'));
+	}
+	return $ckan;
+}
+
+/**
+* Implementation of hook_flush_caches()
+*
+**/
+/*function ckan_flush_caches() {
+	watchdog('ckan', 'Cleared all CKAN caches');
+  return array('cache_ckan');
+}*/
+
+
+/*=========================
+  =	SEARCH RELATED STUFF	=
+ 	=========================*/
+ 	
+/**
+ * Implements hook_form
+ * 
+ * @param Array $form_state
+ * @return Array $form
+ */
+function ckan_search_form(&$form_state){
+
+	$form = array();
+	$form['q'] = array(
+		'#type'         	=> 'textfield',
+		'#default_value' 	=> '',
+		'#size'						=> 20,	
+	);
+	
+	$form['q'] = array(
+		'#type'         	=> 'textfield',
+		'#default_value' 	=> '',
+		'#size'						=> 20,	
+	);
+	
+	$options = array(
+		'open' => t('Open license'),
+		'down' => t('Downloadable'),
+	);
+	
+	$form['filters'] = array(
+		'#type' => 'checkboxes',
+		'#options' => $options,
+	);
+	
+	$form['submit'] = array(
+		'#type'          => 'submit',
+		'#value'         => t('Go'),
+	);
+
+	return $form;
+}
+
+/**
+ * Form submit callback function
+ */
+function ckan_search_form_submit($form, &$form_state) {
+	// The search form relies on control of the redirect destination for its
+  // functionality, so we override any static destination set in the request,
+  // for example by drupal_access_denied() or drupal_not_found()
+  // (see http://drupal.org/node/292565).
+  if (isset($_REQUEST['destination'])) {
+    unset($_REQUEST['destination']);
+  }
+  if (isset($_REQUEST['edit']['destination'])) {
+    unset($_REQUEST['edit']['destination']);
+  }
+  
+  // Set up the query
+  $query = array();
+  // Set the keyword to the value of the textfield
+  $keyword = filter_xss(trim($form_state['values']['q']));
+  // If openness checkbox checked
+	if($form_state['values']['filters']['open']) {	$query[] = 'o=1'; }
+	// If downloadable checkbox vhecked 
+	if($form_state['values']['filters']['down']) {	$query[] = 'd=1';	}
+	// Redirect the form to the search URL with the options set
+	$form_state['redirect'] = array('data/search/'.$keyword, implode('&', $query));
+}
+
+
+/**
+ * Run the CKAN search
+ *
+ * @param	String	$search	The search string
+ */
+function ckan_search_results_page($search){
+	try {
+  	$ckan = ckan_ckan();
+    $results = $ckan->search(check_plain($search));
+  } catch (Exception $e){
+  	return $e->getMessage();
+  }
+  return theme('ckan_results', $results, 'Search');
+}
+
+/**
+ * Builds the search query and outputs the results
+ *  
+ * @param		string	$keywords	The search string input in the textfield
+ * @return 	string 	$output		The themed list of results	
+ */
+function ckan_search_form_results_page($keywords){
+	try {
+  	$ckan = ckan_ckan();
+   	// Set up a parameters array
+   	$parameters = array();
+    // Loop through the $_GET variables
+    foreach($_GET as $key => $value) {
+    	// If openness checkbox was checked
+    	if($key == 'o') {
+    		$parameters['filter_by_openness'] = $value;
+     	}
+     	// If downloadable checkbox was checked
+     	if($key == 'd') {
+				$parameters['filter_by_downloadable'] = $value;
+			}
+    }
+
+	  // If we're in a paged list
+		if($_GET['page']) {
+			$page = $_GET['page'];
+		} else {
+			$page = NULL;
+		}
+		
+		$start = 0;
+		$items_per_page = variable_get('ckan_items_per_page', 4);
+		if($page) {
+			// If we're in a page, we need to set where to start the list
+			$start = $page * $items_per_page;
+ 		}
+ 		
+ 		// Set the offset to the number of records in
+ 		$parameters['offset'] = $start;
+ 		// Limit to the number of items per page 
+ 		$parameters['limit'] = $items_per_page;
+   
+    // Set the search keywords  
+    $parameters['q'] = filter_xss($keywords);
+    // Set all fields to 1
+    $parameters['all_fields'] = '1';
+    // Now run the advanced search
+    $results = $ckan->advancedSearch($parameters);
+    } catch (Exception $e){
+    	  watchdog('ckan', 'Sorry page called from ckan_search_form_results_page()');
+        drupal_goto(variable_get('ckan_no_results_page', 'sorry'));
+    }
+   	$output .= theme('ckan_results', $results, $keywords);
+    return $output;
+}
+
+/**
+ * Validate the search form
+ *
+ * Need to make sure that something is entered in the search text area
+ **/
+function ckan_search_form_validate($form, &$form_state) {
+	// Make sure they put something in the search box
+	if(!trim($form_state['values']['q'])) {
+		form_set_error('q', t('You must enter some text in the search box. I can\'t search for nothing'));
+	} else {
+		// If the don't be sure the clean up the input
+		form_set_value($form['q'], filter_xss($form_state['values']['q']), $form_state);
+	}
+}
+
+
+/*===========================
+  =	MINISTRY RELATED STUFF	=
+ 	===========================*/
+
+/**
+ * Returns the list of Ministries with a count
+ *  
+ * @return string $output
+ */
+function ckan_ministry_list() {
+	// Get the list of Ministries from the backend
+	$ministries = explode("\r\n", filter_xss(variable_get('ckan_ministry_list', '')));
+	foreach($ministries as $ministry) {
+		$item = l($ministry, 'data/ministry/'.rawurlencode($ministry));
+		// Get the cached count value if set - should always be set due to people visiting the tags pages
+		if(($cache = cache_get('ckan:ministry_'. $ministry . '_count', 'cache_ckan')) && !empty($cache->data)) {
+			$item .= ' ('. $cache->data .')';
+		} else {
+			$item .= ' (0)';
+		}
+		$items[] = $item;
+	}
+	$output = theme('item_list', $items);
+	return $output;
+}
+
+/**
+ * Show all packages belong to a Ministry 
+ *
+ * @param 	String	$ministry	The attribute passed in the URL
+ * @return 	String	A themed list of all packages containing that attribute
+ */
+function ckan_ministry_data($ministry) {
+	// If we're in a paged list
+	if($_GET['page']) {
+		$page = $_GET['page'];
+	} else {
+		$page = NULL;
+	}
+	
+	if(($cache = cache_get('ckan:ministry_'. $ministry.$page, 'cache_ckan')) && !empty($cache->data)) {
+		$results = $cache->data;
+	} else {
+		$ckan = ckan_ckan();
+		
+		$start = 0;
+		$items_per_page = variable_get('ckan_items_per_page', 4);
+		if($page) {
+			// If we're in a page, we need to set where to start the list
+			$start = $page * $items_per_page;
+ 		}
+ 		
+ 		// Set the offset to the number of records in
+ 		$offset = $start;
+ 		// Limit to the number of items per page 
+ 		$limit = $items_per_page;
+ 		
+ 		// Get the list of tags with their count
+	  try {
+	  	$results = $ckan->advancedSearch(array('department' => $ministry, 'all_fields' => '1', 'offset' => $offset, 'limit' => $limit));
+	  	//cache_set('ckan__ministry_count_'.$ministry, $pkgs->count);
+	  } catch (Exception $e){
+    	  watchdog('ckan', 'Sorry page called from ckan_ministry_data()');
+	    	drupal_goto(variable_get('ckan_no_results_page', 'sorry'));
+		}
+		// If the API call worked
+	  watchdog('ckan', 'Called CKAN API for list of '.$ministry.' ministry packages');
+    cache_set('ckan:ministry_'. $ministry.$page, $results, 'cache_ckan');
+	}
+	drupal_add_feed(url('data/ministry/'. $ministry . '/feed', array('absolute' => TRUE))); // set up url to updates feeds...
+  drupal_get_html_head();   // Refresh $head variable
+	return theme('ckan_results', $results, $ministry);
+}
+
+
+/** 
+ * Taken from node_feed - http://api.drupal.org/api/function/node_feed/6
+ * Given a tag it returns an RSS feed of all packages under that tag
+ *
+ * @params	string	$ministry	A ministry
+ *
+ */
+function ckan_ministry_feed($ministry) {
+	filter_xss($ministry);
+	$ckan = ckan_ckan();
+	if(($cache = cache_get('ckan:ministry_'.$ministry.'_feed', 'cache_ckan')) && !empty($cache->data)) {
+			// Get the cached data
+			$results = $cache->data;
+	} else {
+		// Go retrieve the cached data
+		try {
+    	// Get the list of tags with their count
+     	$results = $ckan->advancedSearch(array('department' => $ministry));
+     	$results = $results->results;
+    } catch (Exception $e){
+    	return $e->getMessage();
+		}
+		cache_set('ckan:ministry_'.$ministry.'_feed', $results, 'cache_ckan');
+		watchdog('ckan', 'Called CKAN API for '.$ministry.' ministry feed');
+	}
+	return ckan_build_feed($results);	
+}
+
+
+/*=====================
+  =	TAG RELATED STUFF	=
+ 	=====================*/
+
+/**
+ * Display a list of tags
+ */
+function ckan_tag($tag = FALSE, $cloud = FALSE) {   
+	// Create ckan object
+  $ckan = ckan_ckan();
+	if($tag) {	// if there is a tag provided
+		
+		// If we're in a paged list
+		if($_GET['page']) {
+			$page = $_GET['page'];
+		} else {
+			$page = NULL;
+		}
+			
+		// Filter out any natstiness in the tag
+		$tag = filter_xss($tag);
+		// If there is cached data
+		if(($cache = cache_get('ckan:tag_'.$tag.$page, 'cache_ckan')) && !empty($cache->data)) {
+			// Get the cached data
+			$results = $cache->data;
+		} else {
+			
+			$start = 0;
+			$items_per_page = variable_get('ckan_items_per_page', 4);
+			if($page) {
+				// If we're in a page, we need to set where to start the list
+				$start = $page * $items_per_page;
+	 		}
+	 		
+	 		// Set the offset to the number of records in
+	 		$offset = $start;
+	 		// Limit to the number of items per page 
+	 		$limit = $items_per_page;
+		
+			// Go retrieve the cached data
+			try {
+	    	// Get the list of tags with their count
+	     	$results = $ckan->advancedSearch(array('all_fields' => '1', 'tags' => $tag, 'offset' => $offset, 'limit' => $limit));
+	    } catch (Exception $e){
+	    	watchdog('ckan', 'Sorry page called from ckan_tag()');
+        drupal_goto(variable_get('ckan_no_results_page', 'sorry'));
+	    	//return $e->getMessage();
+			}
+			// If the API call worked
+			watchdog('ckan', 'Called CKAN API for packages for tag '. $tag);
+     	cache_set('ckan:tag_'.$tag.$page, $results, 'cache_ckan');
+
+		}
+		// Theme the results
+		drupal_add_feed(url('data/tag/'. $tag . '/feed', array('absolute' => TRUE))); // set up url to updates feeds...
+    drupal_get_html_head();   // Refresh $head variable
+		return theme('ckan_results', $results, $tag);
+		
+	} else { // If no tag provided     	
+  
+		// If there is cached data
+		if(($cache = cache_get('ckan:tags', 'cache_ckan')) && !empty($cache->data)) {
+			// Get the cached data
+			$results = unserialize($cache->data);
+		} else {
+			try {
+	    	// Get the list of tags with their count
+	     	$results = $ckan->getTagCount();
+	    } catch (Exception $e){
+	    	return $e->getMessage();
+	    }
+	    // If the API call worked set the cache
+	    watchdog('ckan', 'Called CKAN API for list of all tags');
+			cache_set('ckan:tags', serialize($results), 'cache_ckan');	    	
+	  }
+	  
+	  // Loop through the results
+	  foreach($results as $package) {
+    // Create links to each one
+    	$list[$package[0]] = l($package[0], 'data/tag/' . $package[0]). ' (' .$package[1]. ')';
+		}
+		
+		return theme('item_list', $list, NULL, $type = 'ul');
+	}
+}
+
+/**
+ * API that returns an array with weighted tags
+ * Used the tagadelic module to do this
+ * @param $result. a query result, any query result that contains an <em>object</em> with the following attributes: $tag->count, $tag->tid, $tag->name and $tag->vid. Refer to tagadelic_get_weighted_tags() for an example."
+ * @param $steps. The amount of tag-sizes you will be using. If you give "12" you sill get six different "weights". Defaults to 6 and is optional.
+ * @return An <em>unordered</em> array with tags-objects, containing the attribute $tag->weight;
+ */
+function ckan_tag_build_weighted($results, $steps = 6) {
+ 	// Find minimum and maximum log-count. 
+  $tags = array();
+  $min = 1e9;
+  $max = -1e9;
+  foreach($results as $result) {
+  	$tag['name'] = $result[0];
+    $tag['number_of_posts'] = $result[1];
+    $tag['count'] = log($result[1]);
+    $min = min($min, $tag['count']);
+    $max = max($max, $tag['count']);
+    $tags[$result[0]] = $tag;
+  }
+  // Note: we need to ensure the range is slightly too large to make sure even
+  // the largest element is rounded down.
+  $range = max(.01, $max - $min) * 1.0001;
+
+  foreach ($tags as $key => $value) {
+    $tags[$key]['weight'] = 1 + floor($steps * ($value['count'] - $min) / $range);
+  }
+  return $tags;
+}
+
+
+/**
+ * Build a tag cloud based on the settings provided
+ *
+ * @return	String	A themed list of weighted tags
+ */
+function ckan_tag_cloud() {
+	// If there is cached data
+	if(($cache = cache_get('ckan:tags', 'cache_ckan')) && !empty($cache->data)) {
+		$results = unserialize($cache->data);	
+	} else {
+		$ckan = ckan_ckan();
+		$results = $ckan->getTagCount();
+		watchdog('ckan', 'Called CKAN API for tag cloud');
+		cache_set('ckan:tags', serialize($results), 'cache_ckan');
+	}
+	
+	// Let's sort them by weight first off
+	foreach ($results as $key => $row) {
+    $tag[$key]  = $row[0];
+    $weight[$key] = $row[1];
+	}
+	array_multisort($weight, SORT_DESC, $results);
+	
+	// Now let's get the top X number of tags
+	$results = array_slice($results, 0, variable_get('ckan_tagcloud_total', 40));
+	
+	// Now build the tags
+	$tags = ckan_tag_build_weighted($results);
+	// Sort them
+	$tags = ckan_tag_sort($tags);
+	// Theme them
+	$output = theme('ckan_weighted_tags', $tags);
+	return $output;
+}
+
+
+/** 
+ * Taken from node_feed - http://api.drupal.org/api/function/node_feed/6
+ * Given a tag it returns an RSS feed of all packages under that tag
+ *
+ * @params	string	$tag	A tag
+ *
+ */
+function ckan_tag_feed($tag) {
+	filter_xss($tag);
+	$ckan = ckan_ckan();
+	if(($cache = cache_get('ckan:tag_'.$tag.'_feed', 'cache_ckan')) && !empty($cache->data)) {
+			// Get the cached data
+			$results = $cache->data;
+	} else {
+		// Go retrieve the cached data
+		try {
+    	// Get the list of tags with their count
+     	$results = $ckan->getTagList($tag);
+    } catch (Exception $e){
+    	return $e->getMessage();
+		}
+		cache_set('ckan:tag_'.$tag.'_feed', $results, 'cache_ckan');
+		watchdog('ckan', 'Called CKAN API for '.$tag.' tag feed');
+	}
+	return ckan_build_feed($results);	
+}
+
+
+/**
+ * API funtion to order a set of tags.
+ **/
+function ckan_tag_sort($tags) {
+  list($sort, $order) = explode(',', variable_get('ckan_tagcloud_sort_order', 'title,asc'));
+  switch ($sort) {
+    case 'title':
+      usort($tags, "_ckan_sort_by_title");
+      break;
+    case 'weight':
+      usort($tags, "_ckan_sort_by_weight");
+      break;
+    case 'random':
+      shuffle($tags);
+      break;
+  }
+  if ($order == 'desc') {
+    $tags = array_reverse($tags);
+  }
+  
+  return $tags;
+}
+
+
+/**
+ * callback for usort, sort by count
+ */
+function _ckan_sort_by_title($a, $b) {
+  return strnatcasecmp($a['name'], $b['name']);
+}
+
+/**
+ * callback for usort, sort by weight
+ */
+function _ckan_sort_by_weight($a, $b) {
+  return $a['weight'] > $b['weight'];
+}
+
+
+/** 
+ * CKAN Open ID block
+ *
+ * Show's link to login using OpenID. If logged in show's links to logout and their account
+ *
+ * @return	String	A bunch of html to display
+ *
+ **/
+function ckan_openid_block() {
+	// Get the current user
+	global $user;
+	// If the user is logged in
+	if($user->uid) {
+		// Get their open id info
+		$result = db_query("SELECT authname FROM {authmap} WHERE module='openid' AND uid=%d", $user->uid);
+		$result = db_fetch_object($result);
+		$open_id = $result->authname;
+		$output .= 'Logged in as ';
+		// If they are logged in with an OpenID show all the necessary links
+		if ($open_id) {
+			$output .= '<img width="16px" height="16px" alt="None" src="/'. drupal_get_path('theme', 'descartes') .'/images/openid.png"> ';
+			$output .= '<strong>'. $open_id .'</strong> ';
+		} else {
+			$output .= '<strong>'. $user->name .'</strong> ';
+		}
+			$output .= '&middot; '.l('My Account ','user/'.$user->uid);
+			$output .= '&middot; '. l('Logout','logout');
+	} else {
+		// If they are not logged in, show login link
+		$output.= l('Log in using OpenID', 'user', $options = array('attributes' => array('class' => 'openid')));
+	}
+	return $output;
+}
+
+
+/**
+ * Retrieves a list of all packages
+ *
+ * @return 	String	A themed list of all packages containing that attribute
+ */
+function ckan_all() {
+	// If we're in a paged list
+	if($_GET['page']) {
+		$page = $_GET['page'];
+	} else {
+		$page = NULL;
+	}
+	
+	if(($cache = cache_get('ckan:all'.$page, 'cache_ckan')) && !empty($cache->data)) {
+		$results = $cache->data;
+	} else {
+		$ckan = ckan_ckan();
+		
+		$start = 0;
+		$items_per_page = variable_get('ckan_items_per_page', 4);
+		if($page) {
+			// If we're in a page, we need to set where to start the list
+			$start = $page * $items_per_page;
+ 		}
+ 		
+ 		// Set the offset to the number of records in
+ 		$offset = $start;
+ 		// Limit to the number of items per page 
+ 		$limit = $items_per_page;
+
+		try {
+	  	$results = $ckan->advancedSearch(array('groups' => 'canadagov', 'all_fields' => '1', 'offset' => $offset, 'limit' => $limit));
+	  } catch (Exception $e){
+	  	return $e->getMessage();
+		}
+		// If the API call worked
+	  watchdog('ckan', 'Called CKAN API for list of all packages');
+    cache_set('ckan:all'.$page, $results, 'cache_ckan');
+	}
+	drupal_add_feed(url('data/all/feed', array('absolute' => TRUE))); // set up url to updates feeds...
+  drupal_get_html_head();   // Refresh $head variable	
+	return theme('ckan_results', $results, 'All Packages');
+}
+
+/**
+ * Function to build the feed for all packages
+ **/
+function ckan_all_feed() {
+	$ckan = ckan_ckan();
+	if(($cache = cache_get('ckan:all_feed', 'cache_ckan')) && !empty($cache->data)) {
+			// Get the cached data
+			$results = $cache->data;
+	} else {
+		try {
+			// Get the list of tags with their count
+		  $results = $ckan->advancedSearch(array('groups' => 'canadagov', 'limit' => '100'));
+		} catch (Exception $e){
+			return $e->getMessage();
+		}
+		watchdog('ckan', 'Called CKAN API to build feed for all packages');
+		cache_set('ckan:all_feed', $results, 'cache_ckan');	
+	}
+	return ckan_build_feed($results->results);	
+}
+
+
+/*===================
+  =	NODE CRUD STUFF	=
+ 	===================*/
+ 	
+/**
+ * Create the node the first time this package is seen.
+ * 
+ * This creates a specific URL which override the wildcard one subsequently
+ * 
+ * @param String $ckan_name
+ */
+function ckan_new($ckan_name){
+	if(!drupal_lookup_path('source', 'dataset/'.$ckan_name)) { // if there is no node already created for this dataset
+		$ckan = ckan_ckan(); // create the ckan object
+    try {
+    	$ckan_data = $ckan->getPackage($ckan_name); // get the package from the package name
+    } catch (CkanException $e){
+      watchdog('ckan', $e->getMessage());
+  		watchdog('ckan', 'Sorry page called from ckan_new()');
+      drupal_goto(variable_get('ckan_no_results_page', 'sorry'));
+      //return "Error" ;
+    }
+    $node = ckan_create_node($ckan_data); // create the dataset
+    watchdog('ckan', 'Called CKAN API for ' .$ckan_name. ' package - ckan_new()');
+    cache_set('ckan:'. $ckan_name, $ckan_data, 'cache_ckan');	
+    drupal_goto('node/'. $node->nid);	// go to the newly created node
+	}
+}
+
+/**
+ * Update and redirect
+ * 
+ * @param String $id	The node id or the package id
+ */
+function ckan_update_data($id){
+	$node = ckan_update_node($id); // Update the node/package
+	drupal_goto('node/'. $node->nid);	// go to the newly created node
+}
+
+
+/**
+ * Update the node
+ * 
+ * @param String $id	The node id or the package id
+ */
+function ckan_update_node($id){
+	// If it's a node id
+	if($node = node_load($id)) {
+		// Get the pacakage name - it's in the body :)
+		$ckan_name = $node->body;
+	} else { // it's a package name
+		$ckan_name = $id;
+		// Clean up the package name, just in case
+		$clean = filter_xss($ckan_name);
+		// Get the proper node/nid path
+		$path = explode('/', drupal_get_normal_path('dataset/'. $clean));
+		if($path[0] == 'node') {
+			// Load the node
+			$node = node_load($path[1]);
+		}
+	}
+	// create the ckan object
+	$ckan = ckan_ckan();
+	try {
+  	$ckan_data = $ckan->getPackage($ckan_name); // get the package from the package name
+  } catch (CkanException $e){
+  	watchdog('ckan', 'Error[ckan_update_node()]: '. $e->getMessage());
+    // If the call to the API returned an error - i.e the Package has since been removed
+    if($node) {
+    	// Delete the node from Drupal as it doesn't exist on CKAN any more
+    	node_delete($node->nid);
+    	return $node;
+    }
+  }
+  // Set the title
+  $node->title = $ckan_data->title;
+  // Set the data
+  $node->ckan = $ckan_data;
+  // Save the node
+	node_save($node);	
+	// Do all the logging 
+	watchdog('ckan', 'Called CKAN API for ' .$ckan_name. ' package - ckan_update_data()');
+  
+  watchdog('ckan', $ckan_name . ' has been updated, clearing caches and deleting nodes');
+	// Flush all the caches
+	cache_clear_all('*', 'cache_ckan', TRUE);
+
+	// Set the cache
+  cache_set('ckan:'. $ckan_name, $ckan_data, 'cache_ckan');	
+  // Redirect to the dataset
+  return $node;
+}
+
+/**
+ * Create a node with provided data
+ *
+ * @param	Object	$ckan_data	All the ckan data retrieved from the API call
+ */
+function ckan_create_node($ckan_data){
+    $node = array(
+	    'title'   => $ckan_data->title,
+	    'uid'     => 1,
+	    'body'    => $ckan_data->name,
+	    'promote' => 1,
+	    'path'    => 'dataset/' . $ckan_data->name,
+	    'type'    => 'ckan',
+	    'comment' => 2,
+    );
+    if ($node = node_submit($node)) {
+      node_save($node);
+    } else {
+    	drupal_set_message('Failed to create node for package.', 'warning');
+    	watchdog('ckan', 'Failed to create node for package.');
+    }
+    return $node;
+}
+
+/**
+ * Define module-provided node types.
+ */
+function ckan_node_info() {
+    return array(
+    'ckan' => array(
+      'name'           => t('CKAN Package'),
+      'module'         => 'ckan',
+      'description'    => t('A package of Open Data.'),
+      'has_title'      => TRUE,
+      'title_label'    => t('Title'),
+      'has_body'       => TRUE,
+      'body_label'     => t('Package Description'),
+      'min_word_count' => 0,
+      'locked'         => FALSE
+    )
+    );
+}
+
+/**
+ * Load node-type-specific information
+ */
+function ckan_load($node){
+	$ckan = ckan_ckan();
+	if(($cache = cache_get('ckan:'. $node->body, 'cache_ckan')) && !empty($cache->data)) {
+			// Get the cached data
+			$node->ckan = $cache->data;
+	} else {
+		try {
+			$node->ckan = $ckan->getPackage($node->body);
+		} catch (Exception $e){
+			drupal_set_message($e->getMessage(), 'error');
+		}
+		cache_set('ckan:'. $node->body, $node->ckan, 'cache_ckan');	
+		watchdog('ckan', 'Called CKAN API for '.$node->body.' package - ckan_load()');
+	}
+	return $node;
+}
+
+/**
+ * Function to redirect to ckan when clicking on CKAN tab
+ *
+ */
+function ckan_edit_ckan($node) {
+	if($node->type == 'ckan') {
+  	drupal_goto('http://ca.ckan.net/package/edit/'.$node->body);
+  }
+}
+
+
+/**
+ * Display a node.
+ */
+function ckan_view($node, $teaser = FALSE, $page = FALSE) {
+  $node = node_prepare($node, $teaser);
+  $required_fields = array('maintainer', 'license', 'author', 'url', 'notes', 'download_url', 'version');
+  $node->content['title']['#value']  = check_plain($node->ckan->title);
+  return $node;
+}
+
+
+/*=======================
+  =	THEME RELATED STUFF	=
+ 	=======================*/
+ 	
+/**
+ * Initializing Theme functions
+ */
+function ckan_theme() {
+    return array(
+    'ckan_results' => array('arguments' => array('results')),
+    'ckan_item' => array('arguments' => array('item')),
+    'ckan_weighted_tags' => array('arguments' => array('tags')),
+    );
+}
+
+
+/**
+ * Generic function for building feeds based on API call results
+ *
+ * @param	object	$data	The ckan results object from an API call
+ **/
+function ckan_build_feed($data) {
+	
+	global $base_url, $language;
+	
+	foreach($data as $item) {
+		$items .= format_rss_item($item, $base_url. '/dataset/'. $item, '');
+	}
+	
+	$item_length = variable_get('feed_item_length', 'teaser');
+  $namespaces = array('xmlns:dc' => 'http://purl.org/dc/elements/1.1/');
+
+	$channel = array();
+	$channel_defaults = array(
+   'version'     => '2.0',
+   'title'       => variable_get('site_name', 'Drupal'),
+   'link'        => $base_url,
+   'description' => variable_get('site_mission', ''),
+   'language'    => $language->language
+  );
+  $channel = array_merge($channel_defaults, $channel);
+
+  $output = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
+  $output .= "<rss version=\"". $channel["version"] ."\" xml:base=\"". $base_url ."\" ". drupal_attributes($namespaces) .">\n";
+  $output .= format_rss_channel($channel['title'], $channel['link'], $channel['description'], $items, $channel['language']);
+  $output .= "</rss>\n";
+  
+  drupal_set_header('Content-Type: application/rss+xml; charset=utf-8');
+  
+  print $output;
+}
+
+
+/**
+ * Theme search results
+ */
+function theme_ckan_results($results, $title = '') {
+	// Two global variables needed by the pager.
+  // Taken from pager_query() in pager.inc
+  global $pager_page_array, $pager_total;
+
+  $output = '';
+
+  // Grab the 'page' query parameter.
+  // Taken from pager_query() in pager.inc
+  $page = isset($_GET['page']) ? $_GET['page'] : '';
+
+  // Convert comma-separated $page to an array, used by other functions.
+  // Taken from pager_query() in pager.inc
+  $pager_page_array = explode(',', $page);
+	
+	// Generate the data for page the requested and add it to the output.
+	//foreach ($results->results as $package) {
+ 	$items_per_page = variable_get('ckan_items_per_page', 4);
+ 	if($results->count < $items_per_page) { $items_per_page = $results->count; }
+ 	$start = 0;
+ 	if($page) {
+ 		$start = $page * $items_per_page;
+ 	}
+ 	
+ 	if($title) {
+ 		$output = '<h1 id="page-title">'.$title.'</h1>';
+ 	}
+	
+	$output .= '<h3 class="resultscount">Your search returned '.$results->count .' records</h3>';
+	
+	for ($i = 0; $i < $items_per_page; $i++) {
+ 		$output .=  theme('ckan_item', $results->results[$i]);
+  }
+	
+	// Put some magic in the two global variables
+  // Based on code in pager_query() in pager.inc
+  $total_results = $results->count;
+  $pager_total[0] = ceil($total_results / $items_per_page); //ckan_number_of_pages();
+  $pager_page_array[0] =
+    max(0, min(
+      (int)$pager_page_array[0],
+      ((int)$pager_total[0]) - 1)
+    );
+ 	// Add the pager to the output.
+  $output .= theme('pager', NULL, $items_per_page, 0);
+  
+  return $output;
+}
+
+/**
+ * Theme individual search items
+ */
+function theme_ckan_item($item) {
+	$output .= '<h2>' . l($item->title, 'dataset/' . urlencode(check_plain($item->name))) . '</h2>';
+	if($item->notes) {
+		$output .= '<p>' . truncate_utf8($item->notes, 250, $wordsafe = FALSE, $dots = TRUE) . '</p>';
+	}
+	
+	if(count($item->tags) > 0) {
+		foreach($item->tags as $key => $value) {
+			$items[] = l($value, 'data/tag/'.$value);
+		}
+		$seperated = implode(', ', $items);
+		$output .= '<p><strong>Tags:</strong> ' .$seperated. '</p>';
+	}
+	
+	return $output;
+}
+
+
+/**
+ * Theme function that renders the HTML for the tags
+ * @ingroup themable
+ */
+function theme_ckan_weighted_tags($tags) {
+  $output = '';
+  foreach ($tags as $tag) {
+    $output .= l($tag['name'], 'data/tag/'.$tag['name'], array('attributes' => array('class' => "tagcloud level".$tag['weight'], 'rel' => 'tag'))) ." \n";
+  }
+  return $output;
+}

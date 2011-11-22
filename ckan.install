@@ -1,0 +1,36 @@
+<?php
+/**
+ * Implementation of hook_install().
+ */
+function ckan_install() {
+  drupal_install_schema('ckan');
+}
+
+/**
+ * Implementation of hook_uninstall().
+ */
+function ckan_uninstall() {
+  drupal_uninstall_schema('ckan');
+}
+
+/**
+ * Implementation of hook_schema().
+ */
+function ckan_schema() {
+  $schema = array();
+  $schema['cache_ckan'] = drupal_get_schema_unprocessed('system', 'cache');
+  return $schema;
+}
+
+/**
+ * Implementation of hook_flush_caches().
+ *
+ * This tells Drupal's cache handling system the name of our caching 
+ * table, so expired items will be purged automatically and this table 
+ * also affected by the empty all caches function.
+ */
+function cachedemo_flush_caches() {
+  return array('cache_cachedemo');
+}
+
+?>
