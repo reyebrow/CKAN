@@ -1,0 +1,11 @@
+This module is used on datadotgc.ca to connect with the CKAN API at ca.ckan.net.
+
+It is based on the starter module for data.gov.uk - https://github.com/practicalweb/drupal-ckan by Sean Burlington.
+
+Please note that this is specific to ca.ckan.net only and it's customizations.
+
+To use it download Drupal and install it.
+
+Then add the module as usual in sites/all/modules/ckan/
+
+You will now have the ability to use your Drupal site to search for CKAN packages - and store comments etc about the packages in your site.
