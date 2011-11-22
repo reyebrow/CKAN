@@ -1,3 +1,5 @@
+** TO USE, PLEASE CHECK OUT A BRANCH (6.x-1.x) **
+
 This module is used on datadotgc.ca to connect with the CKAN API at ca.ckan.net.
 
 It is based on the starter module for data.gov.uk - https://github.com/practicalweb/drupal-ckan by Sean Burlington.
